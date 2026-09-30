@@ -38,6 +38,7 @@ const NAV: Record<Role, NavItem[]> = {
   ],
   KURIKULUM: [
     { href: "/dashboard/kurikulum", label: "Ringkasan", icon: "▦" },
+    { href: "/dashboard/kurikulum/kelas", label: "Kelas", icon: "🏫" },
     { href: "/dashboard/kurikulum/mapel", label: "Mata Pelajaran", icon: "📚" },
     { href: "/dashboard/kurikulum/jadwal", label: "Jadwal", icon: "🗓" },
     { href: "/dashboard/kurikulum/siswa", label: "Data Siswa", icon: "👥" },

@@ -14,6 +14,11 @@ const schema = z.object({
   password: z.string().min(1, "Password wajib diisi"),
 });
 
+// Hash pembanding agar waktu respons sama baik email terdaftar maupun tidak,
+// sehingga penyerang tidak bisa menebak email valid dari selisih waktu.
+const DUMMY_HASH =
+  "$2b$10$6X0NAjDiYrrDrKj2t3b6vejGWPm5BEgbi9Qfn0.mKHrWiMFDD7Sbq";
+
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
 
@@ -32,6 +37,7 @@ export async function POST(request: NextRequest) {
   const user = await prisma.user.findUnique({ where: { email } });
 
   if (!user) {
+    await bcrypt.compare(parsed.data.password, DUMMY_HASH);
     return NextResponse.json(
       { ok: false, message: "Email atau password salah" },
       { status: 401 },

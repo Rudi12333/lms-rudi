@@ -17,6 +17,7 @@ export default async function KepsekDashboard() {
         take: 5,
       }),
       prisma.pengumuman.findMany({
+        include: { author: true },
         orderBy: { createdAt: "desc" },
         take: 4,
       }),

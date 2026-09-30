@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { Card, Badge, EmptyState } from "@/components/ui";
 import { HARI } from "@/lib/constants";
@@ -8,15 +9,17 @@ export async function JadwalTable({
   scope,
   id,
 }: {
-  scope: "kelas" | "guru" | "semua";
+  scope: "kelas" | "guru" | "siswa" | "semua";
   id?: string;
 }) {
-  const where =
+  const where: Prisma.JadwalWhereInput =
     scope === "kelas"
       ? { kelasId: id ?? "" }
       : scope === "guru"
         ? { guruId: id ?? "" }
-        : {};
+        : scope === "siswa"
+          ? { kelas: { anggota: { some: { siswaId: id ?? "" } } } }
+          : {};
 
   const jadwal = await prisma.jadwal.findMany({
     where,
@@ -227,7 +230,7 @@ export async function JadwalCardWrapper({
   id,
 }: {
   title: string;
-  scope: "kelas" | "guru" | "semua";
+  scope: "kelas" | "guru" | "siswa" | "semua";
   id?: string;
 }) {
   return (

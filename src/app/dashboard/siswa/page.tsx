@@ -10,7 +10,10 @@ function formatDate(d: Date) {
 export default async function SiswaDashboard() {
   const session = await requireRole("SISWA");
 
-  const [kelas, tugas, pengumpulan, nilai, jadwal, rataRata] = await Promise.all([
+  const milikKelasSaya = { kelas: { anggota: { some: { siswaId: session.userId } } } };
+
+  const [kelas, tugas, pengumpulan, nilai, jadwal, rataRata, tugasBelum, belumDikumpulkan] =
+    await Promise.all([
     prisma.kelasSiswa.findMany({
       where: { siswaId: session.userId },
       include: { kelas: { include: { mapel: { include: { guru: true } } } } },
@@ -34,9 +37,18 @@ export default async function SiswaDashboard() {
       where: { siswaId: session.userId },
       _avg: { nilaiAkhir: true },
     }),
+    prisma.tugas.findMany({
+      where: { ...milikKelasSaya, pengumpulan: { none: { siswaId: session.userId } } },
+      include: { mapel: true },
+      orderBy: { deadline: "asc" },
+      take: 5,
+    }),
+    prisma.tugas.count({
+      where: { ...milikKelasSaya, pengumpulan: { none: { siswaId: session.userId } } },
+    }),
   ]);
 
-  const belumDikumpulkan = tugas - pengumpulan.length;
+  const now = new Date();
   const rata = rataRata._avg.nilaiAkhir;
 
   return (
@@ -47,7 +59,7 @@ export default async function SiswaDashboard() {
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         <StatCard label="Kelas" value={kelas.length} tone="blue" />
         <StatCard label="Tugas Diberikan" value={tugas} tone="amber" />
-        <StatCard label="Belum Dikumpulkan" value={Math.max(belumDikumpulkan, 0)} tone="rose" />
+        <StatCard label="Belum Dikumpulkan" value={belumDikumpulkan} tone="rose" />
         <StatCard
           label="Rata-rata Nilai"
           value={rata ? rata.toFixed(1) : "-"}
@@ -111,10 +123,32 @@ export default async function SiswaDashboard() {
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
-        <Card title="Tugas Saya" desc="Klik untuk melihat tugas yang belum dikerjakan">
+        <Card title="Tugas Belum Dikumpulkan" desc="Diurutkan dari deadline terdekat">
+          {tugasBelum.length === 0 ? (
+            <EmptyState message="Tidak ada tugas yang menunggu." />
+          ) : (
+            <ul className="space-y-2">
+              {tugasBelum.map((t) => (
+                <li
+                  key={t.id}
+                  className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 px-3 py-2"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-medium text-slate-800">{t.judul}</p>
+                    <p className="text-xs text-slate-500">
+                      {t.mapel.nama} • {formatDate(t.deadline)}
+                    </p>
+                  </div>
+                  <Badge tone={t.deadline < now ? "red" : "amber"}>
+                    {t.deadline < now ? "Lewat" : "Menunggu"}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          )}
           <Link
             href="/dashboard/siswa/tugas"
-            className="text-sm font-medium text-blue-600 hover:underline"
+            className="mt-3 inline-block text-sm font-medium text-blue-600 hover:underline"
           >
             Lihat semua tugas →
           </Link>

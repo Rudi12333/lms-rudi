@@ -103,6 +103,20 @@ export async function deleteUser(formData: FormData) {
     );
   }
 
+  // Relasi guru ke Tugas/Jadwal/Nilai memakai onDelete: Cascade, sehingga menghapus
+  // guru akan ikut menghapus tugas, pengumpulan siswa, jadwal, dan nilai miliknya.
+  // Untuk akun yang sudah punya data akademik, arahkan admin untuk menonaktifkan saja.
+  const [tugas, jadwal, nilai] = await Promise.all([
+    prisma.tugas.count({ where: { guruId: id } }),
+    prisma.jadwal.count({ where: { guruId: id } }),
+    prisma.nilai.count({ where: { guruId: id } }),
+  ]);
+  if (tugas + jadwal + nilai > 0) {
+    redirect(
+      "/dashboard/admin/pengguna?error=Akun+ini+memiliki+data+akademik.+Nonaktifkan+akun,+jangan+dihapus",
+    );
+  }
+
   await prisma.user.delete({ where: { id } }).catch(() => {
     redirect("/dashboard/admin/pengguna?error=Gagal+menghapus+user");
   });
@@ -131,7 +145,7 @@ export async function createKelas(formData: FormData) {
 
   if (!parsed.success) {
     redirect(
-      `/dashboard/admin/kelas?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Data tidak valid")}`,
+      `/dashboard/kurikulum/kelas?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Data tidak valid")}`,
     );
   }
 
@@ -139,20 +153,21 @@ export async function createKelas(formData: FormData) {
   if (waliId) {
     const wali = await prisma.user.findUnique({ where: { id: waliId } });
     if (!wali || wali.role !== "GURU") {
-      redirect("/dashboard/admin/kelas?error=Wali+kelas+harus+berrole+guru");
+      redirect("/dashboard/kurikulum/kelas?error=Wali+kelas+harus+berrole+guru");
     }
   }
 
   const bentrok = await prisma.kelas.findUnique({
     where: { name: parsed.data.name },
   });
-  if (bentrok) redirect("/dashboard/admin/kelas?error=Nama+kelas+sudah+ada");
+  if (bentrok) redirect("/dashboard/kurikulum/kelas?error=Nama+kelas+sudah+ada");
 
   await prisma.kelas.create({ data: parsed.data });
 
+  revalidatePath("/dashboard/kurikulum/kelas");
   revalidatePath("/dashboard/admin/kelas");
   revAll();
-  redirect("/dashboard/admin/kelas?sukses=Kelas+ditambahkan");
+  redirect("/dashboard/kurikulum/kelas?sukses=Kelas+ditambahkan");
 }
 
 const mapelSchema = z.object({
@@ -276,17 +291,25 @@ export async function createJadwal(formData: FormData) {
   if (!guru || guru.role !== "GURU")
     redirect(`${target}?error=Guru+tidak+valid`);
 
-  const bentrok = await prisma.jadwal.findFirst({
-    where: {
-      kelasId: parsed.data.kelasId,
-      hari: parsed.data.hari,
-      OR: [
-        { jamMulai: { lt: parsed.data.jamSelesai } },
-        { jamSelesai: { gt: parsed.data.jamMulai } },
-      ],
-    },
+  // Dua rentang waktu bertabrakan bila mulai_A < selesai_B DAN selesai_A > mulai_B.
+  // Format "HH:MM" berpadding nol sehingga aman dibandingkan sebagai string.
+  const overlap = {
+    hari: parsed.data.hari,
+    jamMulai: { lt: parsed.data.jamSelesai },
+    jamSelesai: { gt: parsed.data.jamMulai },
+  };
+  const bentrokKelas = await prisma.jadwal.findFirst({
+    where: { ...overlap, kelasId: parsed.data.kelasId },
   });
-  if (bentrok) redirect(`${target}?error=Jam+bentrok+dengan+jadwal+lain`);
+  if (bentrokKelas) {
+    redirect(`${target}?error=Jam+bentrok+dengan+jadwal+kelas+ini`);
+  }
+  const bentrokGuru = await prisma.jadwal.findFirst({
+    where: { ...overlap, guruId: parsed.data.guruId },
+  });
+  if (bentrokGuru) {
+    redirect(`${target}?error=Guru+sudah+mengajar+di+kelas+lain+pada+jam+tersebut`);
+  }
 
   await prisma.jadwal.create({ data: parsed.data });
 
@@ -369,21 +392,75 @@ export async function deletePengumuman(formData: FormData) {
   revAll();
 }
 
+export async function enrollSiswa(formData: FormData) {
+  await requireRole("ADMIN", "KURIKULUM");
+  const target = "/dashboard/kurikulum/kelas";
+  const kelasId = str(formData, "kelasId");
+  const siswaId = str(formData, "siswaId");
+
+  if (!kelasId || !siswaId) {
+    redirect(`${target}?error=Kelas+dan+siswa+wajib+dipilih`);
+  }
+
+  const [kelas, siswa] = await Promise.all([
+    prisma.kelas.findUnique({ where: { id: kelasId } }),
+    prisma.user.findUnique({ where: { id: siswaId } }),
+  ]);
+  if (!kelas) redirect(`${target}?error=Kelas+tidak+ditemukan`);
+  if (!siswa || siswa.role !== "SISWA") {
+    redirect(`${target}?error=Siswa+tidak+valid`);
+  }
+
+  // Satu siswa hanya boleh berada di satu kelas pada tahun ajaran yang sama.
+  const sudah = await prisma.kelasSiswa.findFirst({
+    where: { siswaId, kelas: { tahunAjaran: kelas.tahunAjaran } },
+    include: { kelas: true },
+  });
+  if (sudah) {
+    const pesan =
+      sudah.kelasId === kelasId
+        ? "Siswa sudah menjadi anggota kelas ini"
+        : `Siswa sudah terdaftar di kelas ${sudah.kelas.name} pada TA ${kelas.tahunAjaran}`;
+    redirect(`${target}?error=${encodeURIComponent(pesan)}`);
+  }
+
+  await prisma.kelasSiswa.create({ data: { kelasId, siswaId } });
+
+  revalidatePath(target);
+  revalidatePath("/dashboard/admin/kelas");
+  revAll();
+  redirect(`${target}?sukses=Siswa+ditambahkan+ke+kelas`);
+}
+
+export async function unenrollSiswa(formData: FormData) {
+  await requireRole("ADMIN", "KURIKULUM");
+  const target = "/dashboard/kurikulum/kelas";
+  const id = str(formData, "id");
+  if (!id) redirect(target);
+
+  await prisma.kelasSiswa.delete({ where: { id } }).catch(() => {});
+
+  revalidatePath(target);
+  revalidatePath("/dashboard/admin/kelas");
+  revAll();
+  redirect(`${target}?sukses=Siswa+dikeluarkan+dari+kelas`);
+}
+
 /* ------------------------------------------------------------------ */
 /*  GURU                                                               */
 /* ------------------------------------------------------------------ */
 
-const mapelSchema = z.object({
-  judul: z.string().min(3, "Judul minimal 3 karakter"),
-  deskripsi: z.string().min(5, "Deskripsi minimal 5 karakter"),
-  mapelId: z.string().min(1, "Mata pelajaran wajib dipilih"),
-  deadline: z.string().min(1, "Deadline wajib diisi"),
-});
-
-const tugasSchema = mapelSchema.refine((d) => !Number.isNaN(Date.parse(d.deadline)), {
-  message: "Format deadline tidak valid",
-  path: ["deadline"],
-});
+const tugasSchema = z
+  .object({
+    judul: z.string().min(3, "Judul minimal 3 karakter"),
+    deskripsi: z.string().min(5, "Deskripsi minimal 5 karakter"),
+    mapelId: z.string().min(1, "Mata pelajaran wajib dipilih"),
+    deadline: z.string().min(1, "Deadline wajib diisi"),
+  })
+  .refine((d) => !Number.isNaN(Date.parse(d.deadline)), {
+    message: "Format deadline tidak valid",
+    path: ["deadline"],
+  });
 
 export async function createTugas(formData: FormData) {
   const session = await requireRole("GURU", "ADMIN");
@@ -469,7 +546,7 @@ export async function nilaiiTugas(formData: FormData) {
 
   await prisma.pengumpulan.update({
     where: { id },
-    data: { nilaiTugas: nilai, catatan: catatan || null },
+    data: { nilaiTugas: nilai, feedback: catatan || null },
   });
 
   revalidatePath("/dashboard/guru/tugas");
@@ -477,63 +554,80 @@ export async function nilaiiTugas(formData: FormData) {
   revAll();
 }
 
+const SEMESTER = ["Ganjil", "Genap"] as const;
+
 const nilaiSchema = z.object({
+  mapelId: z.string().min(1, "Mata pelajaran wajib dipilih"),
   siswaId: z.string().min(1, "Siswa wajib dipilih"),
-  mapel: z.string().min(3, "Nama mapel minimal 3 karakter"),
-  kelas: z.string().min(1, "Kelas wajib diisi"),
-  semester: z.string().min(3, "Semester tidak valid"),
-  nilaiAkhir: z.coerce.number().min(0).max(100),
-  catatan: z.string().optional(),
+  semester: z.enum(SEMESTER, { message: "Semester tidak valid" }),
+  nilaiAkhir: z
+    .number({ message: "Nilai harus berupa angka" })
+    .min(0, "Nilai minimal 0")
+    .max(100, "Nilai maksimal 100"),
+  catatan: z.string().max(300, "Catatan maksimal 300 karakter").optional(),
 });
 
 export async function createNilai(formData: FormData) {
   const session = await requireRole("GURU", "ADMIN");
+  const target = "/dashboard/guru/nilai";
 
   const parsed = nilaiSchema.safeParse({
+    mapelId: str(formData, "mapelId"),
     siswaId: str(formData, "siswaId"),
-    mapel: str(formData, "mapel"),
-    kelas: str(formData, "kelas"),
     semester: str(formData, "semester"),
-    nilaiAkhir: str(formData, "nilaiAkhir"),
+    nilaiAkhir: num(formData, "nilaiAkhir"),
     catatan: str(formData, "catatan") || undefined,
   });
 
-  const target = "/dashboard/guru/nilai";
   if (!parsed.success) {
     redirect(
       `${target}?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Data tidak valid")}`,
     );
   }
+  const data = parsed.data;
 
-  const siswa = await prisma.user.findUnique({
-    where: { id: parsed.data.siswaId },
+  const mapel = await prisma.mapel.findUnique({
+    where: { id: data.mapelId },
+    include: { kelas: true },
   });
-  if (!siswa || siswa.role !== "SISWA")
-    redirect(`${target}?error=Siswa+tidak+valid`);
+  if (!mapel) redirect(`${target}?error=Mata+pelajaran+tidak+ditemukan`);
+  if (session.role === "GURU" && mapel.guruId !== session.userId) {
+    redirect(`${target}?error=Anda+bukan+pengampu+mata+pelajaran+ini`);
+  }
+
+  // Siswa harus benar-benar anggota kelas dari mapel tersebut.
+  const anggota = await prisma.kelasSiswa.findUnique({
+    where: { kelasId_siswaId: { kelasId: mapel.kelasId, siswaId: data.siswaId } },
+  });
+  if (!anggota) redirect(`${target}?error=Siswa+bukan+anggota+kelas+ini`);
+
+  const pemberi = mapel.guruId ?? session.userId;
+  const nilaiPredikat = predikat(data.nilaiAkhir);
 
   await prisma.nilai.upsert({
     where: {
       siswaId_mapel_semester: {
-        siswaId: parsed.data.siswaId,
-        mapel: parsed.data.mapel,
-        semester: parsed.data.semester,
+        siswaId: data.siswaId,
+        mapel: mapel.nama,
+        semester: data.semester,
       },
     },
     create: {
-      siswaId: parsed.data.siswaId,
-      guruId: session.userId,
-      mapel: parsed.data.mapel,
-      kelas: parsed.data.kelas,
-      semester: parsed.data.semester,
-      nilaiAkhir: parsed.data.nilaiAkhir,
-      predikat: predikat(parsed.data.nilaiAkhir),
-      catatan: parsed.data.catatan,
+      siswaId: data.siswaId,
+      guruId: pemberi,
+      mapel: mapel.nama,
+      kelas: mapel.kelas.name,
+      semester: data.semester,
+      nilaiAkhir: data.nilaiAkhir,
+      predikat: nilaiPredikat,
+      catatan: data.catatan ?? null,
     },
     update: {
-      nilaiAkhir: parsed.data.nilaiAkhir,
-      predikat: predikat(parsed.data.nilaiAkhir),
-      kelas: parsed.data.kelas,
-      catatan: parsed.data.catatan,
+      guruId: pemberi,
+      kelas: mapel.kelas.name,
+      nilaiAkhir: data.nilaiAkhir,
+      predikat: nilaiPredikat,
+      catatan: data.catatan ?? null,
     },
   });
 
@@ -544,59 +638,99 @@ export async function createNilai(formData: FormData) {
 }
 
 export async function deleteNilai(formData: FormData) {
-  await requireRole("GURU", "ADMIN");
+  const session = await requireRole("GURU", "ADMIN");
   const id = str(formData, "id");
-  if (id) await prisma.nilai.delete({ where: { id } }).catch(() => {});
+  if (!id) redirect("/dashboard/guru/nilai");
+
+  const nilai = await prisma.nilai.findUnique({ where: { id } });
+  if (!nilai) redirect("/dashboard/guru/nilai?error=Data+nilai+tidak+ditemukan");
+  if (session.role === "GURU" && nilai.guruId !== session.userId) {
+    redirect("/dashboard/guru/nilai?error=Anda+tidak+boleh+menghapus+nilai+ini");
+  }
+
+  await prisma.nilai.delete({ where: { id } });
 
   revalidatePath("/dashboard/guru/nilai");
+  revalidatePath("/dashboard/siswa/nilai");
   revAll();
+  redirect("/dashboard/guru/nilai?sukses=Nilai+dihapus");
 }
 
 /* ------------------------------------------------------------------ */
 /*  SISWA                                                              */
 /* ------------------------------------------------------------------ */
 
+const pengumpulanSchema = z.object({
+  tugasId: z.string().min(1, "Tugas tidak valid"),
+  catatan: z.string().max(500, "Catatan maksimal 500 karakter").optional(),
+  link: z
+    .string()
+    .max(500, "Tautan terlalu panjang")
+    .refine((v) => {
+      try {
+        const u = new URL(v);
+        return u.protocol === "http:" || u.protocol === "https:";
+      } catch {
+        return false;
+      }
+    }, "Tautan harus berupa URL http:// atau https:// yang valid")
+    .optional(),
+});
+
 export async function submitTugas(formData: FormData) {
   const session = await requireRole("SISWA");
-  const tugasId = str(formData, "tugasId");
-  const catatan = str(formData, "catatan");
-  const fileName = str(formData, "fileName");
+  const target = "/dashboard/siswa/tugas";
 
-  if (!tugasId) redirect("/dashboard/siswa/tugas");
-  if (fileName.length > 180) {
-    redirect("/dashboard/siswa/tugas?error=Nama+file+terlalu+panjang");
+  const parsed = pengumpulanSchema.safeParse({
+    tugasId: str(formData, "tugasId"),
+    catatan: str(formData, "catatan") || undefined,
+    link: str(formData, "link") || undefined,
+  });
+  if (!parsed.success) {
+    redirect(
+      `${target}?error=${encodeURIComponent(parsed.error.issues[0]?.message ?? "Data tidak valid")}`,
+    );
+  }
+  const { tugasId, catatan, link } = parsed.data;
+
+  if (!catatan && !link) {
+    redirect(`${target}?error=Isi+catatan+atau+sertakan+tautan+pekerjaan`);
   }
 
-  const tugas = await prisma.tugas.findUnique({
-    where: { id: tugasId },
-    include: { kelas: { include: { anggota: true } } },
+  const tugas = await prisma.tugas.findUnique({ where: { id: tugasId } });
+  if (!tugas) redirect(`${target}?error=Tugas+tidak+ditemukan`);
+
+  const anggota = await prisma.kelasSiswa.findUnique({
+    where: { kelasId_siswaId: { kelasId: tugas.kelasId, siswaId: session.userId } },
   });
-  if (!tugas) redirect("/dashboard/siswa/tugas?error=Tugas+tidak+ditemukan");
+  if (!anggota) redirect(`${target}?error=Anda+bukan+anggota+kelas+ini`);
 
-  const anggota = tugas.kelas.anggota.some((a) => a.siswaId === session.userId);
-  if (!anggota)
-    redirect("/dashboard/siswa/tugas?error=Anda+bukan+anggota+kelas+ini");
+  const fileName = link ? new URL(link).hostname : null;
 
+  // Mengumpulkan ulang menghapus nilai & feedback lama agar guru menilai versi terbaru.
   await prisma.pengumpulan.upsert({
     where: { tugasId_siswaId: { tugasId, siswaId: session.userId } },
     create: {
       tugasId,
       siswaId: session.userId,
-      catatan: catatan || null,
-      fileName: fileName || null,
-      fileUrl: fileName ? `/uploads/${encodeURIComponent(fileName)}` : null,
+      catatan: catatan ?? null,
+      fileUrl: link ?? null,
+      fileName,
     },
     update: {
-      catatan: catatan || null,
-      fileName: fileName || null,
-      fileUrl: fileName ? `/uploads/${encodeURIComponent(fileName)}` : null,
+      catatan: catatan ?? null,
+      fileUrl: link ?? null,
+      fileName,
+      submittedAt: new Date(),
       nilaiTugas: null,
+      feedback: null,
     },
   });
 
-  revalidatePath("/dashboard/siswa/tugas");
+  revalidatePath(target);
+  revalidatePath("/dashboard/guru/tugas");
   revAll();
-  redirect("/dashboard/siswa/tugas?sukses=Tugas+terkirim");
+  redirect(`${target}?sukses=Tugas+terkirim`);
 }
 
 export async function deletePengumpulan(formData: FormData) {
@@ -608,8 +742,15 @@ export async function deletePengumpulan(formData: FormData) {
   if (!pengumpulan || pengumpulan.siswaId !== session.userId) {
     redirect("/dashboard/siswa/tugas?error=Anda+tidak+boleh+menghapus+ini");
   }
+  if (pengumpulan.nilaiTugas !== null) {
+    redirect(
+      "/dashboard/siswa/tugas?error=Pengumpulan+yang+sudah+dinilai+tidak+dapat+ditarik",
+    );
+  }
 
   await prisma.pengumpulan.delete({ where: { id } });
   revalidatePath("/dashboard/siswa/tugas");
+  revalidatePath("/dashboard/guru/tugas");
   revAll();
+  redirect("/dashboard/siswa/tugas?sukses=Pengumpulan+ditarik");
 }

@@ -64,7 +64,6 @@ export default async function GuruTugasPage(props: { searchParams: SearchParams 
               />
             </div>
             <FormField label="Deadline" name="deadline" type="datetime-local" />
-            <input type="hidden" name="kelasId" value={mapel[0]?.kelasId ?? ""} />
             <div className="sm:col-span-2">
               <SubmitButton label="Buat Tugas" />
             </div>
@@ -126,12 +125,32 @@ export default async function GuruTugasPage(props: { searchParams: SearchParams 
                               {p.siswa.name}
                             </p>
                             <p className="truncate text-xs text-slate-500">
-                              {p.fileName ?? "Tanpa file"} •{" "}
+                              {p.fileUrl ? (
+                                <a
+                                  href={p.fileUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:underline"
+                                >
+                                  {p.fileName ?? "Buka tautan"}
+                                </a>
+                              ) : (
+                                "Tanpa tautan"
+                              )}{" "}
+                              •{" "}
                               {new Date(p.createdAt).toLocaleDateString("id-ID", {
                                 day: "numeric",
                                 month: "short",
                               })}
+                              {p.createdAt > t.deadline ? (
+                                <span className="ml-1 font-medium text-rose-600">(terlambat)</span>
+                              ) : null}
                             </p>
+                            {p.catatan ? (
+                              <p className="truncate text-xs text-slate-500">
+                                Catatan siswa: {p.catatan}
+                              </p>
+                            ) : null}
                           </div>
                           <div className="w-20">
                             <label className="mb-0.5 block text-[11px] text-slate-500">Nilai</label>
@@ -146,7 +165,7 @@ export default async function GuruTugasPage(props: { searchParams: SearchParams 
                             />
                           </div>
                           <div className="w-32">
-                            <label className="mb-0.5 block text-[11px] text-slate-500">Catatan</label>
+                            <label className="mb-0.5 block text-[11px] text-slate-500">Komentar</label>
                             <input
                               name="catatan"
                               type="text"
