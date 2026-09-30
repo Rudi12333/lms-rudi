@@ -1,0 +1,158 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// SQLite tidak mendukung enum, jadi role disimpan sebagai String
+// dengan nilai: ADMIN | GURU | SISWA | KEPSEK | KURIKULUM
+
+model User {
+  id               String        @id @default(cuid())
+  email            String        @unique
+  password         String
+  name             String
+  role             String        @default("SISWA")
+  phone            String?
+  isActive         Boolean       @default(true)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  kelasDiwali      Kelas[]       @relation("WaliKelas")
+  mapelDiajar      Mapel[]
+  tugasDibuat      Tugas[]
+  pengumpulan      Pengumpulan[] @relation("PengumpulanSiswa")
+  nilaiDiberikan   Nilai[]      @relation("NilaiGuru")
+  nilaiDirimo      Nilai[]      @relation("NilaiSiswa")
+  jadwalMengajar   Jadwal[]
+  pengumuman       Pengumuman[]
+  keanggotaanKelas KelasSiswa[]
+}
+
+model Kelas {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  tingkat     String
+  tahunAjaran String
+  waliKelasId String?
+  createdAt   DateTime @default(now())
+
+  waliKelas User?         @relation("WaliKelas", fields: [waliKelasId], references: [id], onDelete: SetNull)
+  anggota    KelasSiswa[]
+  mapel      Mapel[]
+  jadwal     Jadwal[]
+  tugas      Tugas[]
+}
+
+model KelasSiswa {
+  id      String @id @default(cuid())
+  kelasId String
+  siswaId String
+
+  kelas Kelas @relation(fields: [kelasId], references: [id], onDelete: Cascade)
+  siswa User   @relation(fields: [siswaId], references: [id], onDelete: Cascade)
+
+  @@unique([kelasId, siswaId])
+}
+
+model Mapel {
+  id        String   @id @default(cuid())
+  kode      String   @unique
+  nama      String
+  kelasId   String
+  guruId    String?
+  deskripsi String?
+  createdAt DateTime @default(now())
+
+  kelas Kelas  @relation(fields: [kelasId], references: [id], onDelete: Cascade)
+  guru  User?  @relation(fields: [guruId], references: [id], onDelete: SetNull)
+  tugas Tugas[]
+
+  @@index([kelasId])
+}
+
+model Tugas {
+  id        String   @id @default(cuid())
+  judul     String
+  deskripsi String
+  mapelId   String
+  kelasId   String
+  guruId    String
+  deadline  DateTime
+  dibuat    DateTime @default(now())
+
+  mapel       Mapel         @relation(fields: [mapelId], references: [id], onDelete: Cascade)
+  kelas       Kelas         @relation(fields: [kelasId], references: [id], onDelete: Cascade)
+  guru        User          @relation(fields: [guruId], references: [id], onDelete: Cascade)
+  pengumpulan Pengumpulan[]
+
+  @@index([kelasId])
+  @@index([mapelId])
+}
+
+model Pengumpulan {
+  id         String   @id @default(cuid())
+  tugasId    String
+  siswaId    String
+  catatan    String?
+  nilaiTugas Float?
+  fileUrl    String?
+  fileName   String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tugas Tugas @relation(fields: [tugasId], references: [id], onDelete: Cascade)
+  siswa User   @relation("PengumpulanSiswa", fields: [siswaId], references: [id], onDelete: Cascade)
+
+  @@unique([tugasId, siswaId])
+}
+
+model Nilai {
+  id         String   @id @default(cuid())
+  siswaId    String
+  guruId     String
+  mapel      String
+  kelas      String
+  semester   String
+  nilaiAkhir Float
+  predikat   String
+  catatan    String?
+  updatedAt  DateTime @updatedAt
+
+  siswa User @relation("NilaiSiswa", fields: [siswaId], references: [id], onDelete: Cascade)
+  guru  User @relation("NilaiGuru", fields: [guruId], references: [id], onDelete: Cascade)
+
+  @@unique([siswaId, mapel, semester])
+}
+
+model Jadwal {
+  id         String   @id @default(cuid())
+  hari       String
+  jamMulai   String
+  jamSelesai String
+  kelasId    String
+  mapel      String
+  guruId     String
+  ruangan    String?
+  createdAt  DateTime @default(now())
+
+  kelas Kelas @relation(fields: [kelasId], references: [id], onDelete: Cascade)
+  guru  User  @relation(fields: [guruId], references: [id], onDelete: Cascade)
+
+  @@index([kelasId])
+  @@index([guruId])
+}
+
+model Pengumuman {
+  id        String   @id @default(cuid())
+  judul     String
+  isi       String
+  authorId  String
+  audience  String   @default("SEMUA")
+  createdAt DateTime @default(now())
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+}
